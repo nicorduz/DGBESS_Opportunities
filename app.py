@@ -157,9 +157,11 @@ with st.sidebar:
     st.markdown("##### Data sources")
     up_bus = st.file_uploader("Buses / headroom CSV (optional override)", type=["csv"], key="ub")
     up_sub = st.file_uploader("Substations CSV (optional override)", type=["csv"], key="us")
+    up_prj = st.file_uploader("Projects (Solar / BESS) CSV (optional override)", type=["csv"], key="up")
 
 buses = dl.load_buses(up_bus if up_bus else None)
 subs  = dl.load_substations(up_sub if up_sub else None)
+projects = dl.load_projects(up_prj if up_prj else None)
 
 if buses.empty:
     st.error("No buses data found. Place `buses.csv` in ./data or upload it in the sidebar.")
@@ -178,6 +180,7 @@ st.markdown(f"""<div class="hero">{logo_html}
   <span class="chip">ISO: {iso_list}</span>
   <span class="chip">{len(buses):,} buses</span>
   <span class="chip">{len(subs):,} substations</span>
+  <span class="chip">{len(projects):,} projects</span>
   <span class="chip">{APP_VERSION}</span>
 </div>""", unsafe_allow_html=True)
 
@@ -286,13 +289,16 @@ with tab_map:
     if view.empty:
         st.warning("No buses match these filters. Loosen a threshold.")
     else:
-        mc1, mc2, mc3 = st.columns([1.2, 1.2, 1.6])
-        color_by = mc1.selectbox("Color map by",
-                                 [dl.HEADROOM_COL, dl.CAPACITY_COL,
+        mc1, mc2, mc3 = st.columns([1.3, 1.5, 1.4])
+        color_by = mc1.selectbox("Color nodes by",
+                                 [dl.CAPACITY_COL, dl.HEADROOM_COL,
                                   "Constraint AC Loading Ratio (Percentage)"], index=0)
-        show_subs = mc2.checkbox("Overlay substations in view area", value=False)
+        overlays = mc2.multiselect("Overlay on map", ["Substations", "Projects (Solar/BESS)"],
+                                   default=["Projects (Solar/BESS)"] if not projects.empty else [])
         base_style = mc3.selectbox("Base map",
-                                   ["open-street-map", "carto-positron", "carto-darkmatter"], index=1)
+                                   ["carto-positron", "carto-darkmatter", "open-street-map"], index=0)
+        show_subs = "Substations" in overlays
+        show_proj = "Projects (Solar/BESS)" in overlays and not projects.empty
 
         # marker size ∝ capacity (clipped so nothing dominates)
         size = view[dl.CAPACITY_COL].clip(lower=20, upper=1500)
@@ -308,27 +314,60 @@ with tab_map:
                        else [[0, "#CFEAD6"], [0.6, GOLD], [1, "#B3261E"]])
 
         mcenter, mzoom = center_zoom(view)
+        # ── nodes (buses): circles, colored by the chosen metric (capacity by default)
         fig = px_scatter_map(
             view, lat=dl.LAT_COL, lon=dl.LON_COL, color=color_by, size=size,
-            size_max=26, zoom=mzoom, height=620, hover_name="Bus Name",
+            size_max=26, zoom=mzoom, height=640, hover_name="Bus Name",
             hover_data=hover_cols, color_continuous_scale=color_scale)
+        fig.update_traces(marker=dict(symbol="circle"),
+                          name=f"Grid nodes (color = {dl.label(dl.BUS_COLUMNS, color_by)})",
+                          showlegend=True)
+
+        # geographic window to keep overlays near the nodes on screen
+        latb = (view[dl.LAT_COL].min() - .4, view[dl.LAT_COL].max() + .4)
+        lonb = (view[dl.LON_COL].min() - .4, view[dl.LON_COL].max() + .4)
+
+        # ── substations: distinct PIN symbol (falls back to slate dots on raster styles)
         if show_subs and not subs.empty:
-            latb = (view[dl.LAT_COL].min() - .3, view[dl.LAT_COL].max() + .3)
-            lonb = (view[dl.LON_COL].min() - .3, view[dl.LON_COL].max() + .3)
             sv = subs[(subs["Latitude (Degrees)"].between(*latb)) &
                       (subs["Longitude (Degrees)"].between(*lonb))]
             add_map_scatter(
-                fig,
-                lat=sv["Latitude (Degrees)"], lon=sv["Longitude (Degrees)"],
-                mode="markers", marker=dict(size=6, color="#8A85AD"),
+                fig, lat=sv["Latitude (Degrees)"], lon=sv["Longitude (Degrees)"],
+                mode="markers", marker=dict(size=11, color="#5B5580", symbol="marker"),
                 name="Substations", hoverinfo="text",
                 text=sv["Substation Name"].astype(str) + " · " +
                      sv["Max Voltage (kV)"].astype(str) + " kV")
+
+        # ── projects: Solar = gold star, Storage/BESS = teal circle (own colors/shapes)
+        if show_proj:
+            pv = projects[(projects[dl.LAT_COL].between(*latb)) &
+                          (projects[dl.LON_COL].between(*lonb))]
+            styles = {"Solar": ("star", GOLD), "Storage": ("circle", "#0FB5AE")}
+            for ptype, (sym, col) in styles.items():
+                pp = pv[pv["Power Project Type"] == ptype]
+                if pp.empty:
+                    continue
+                psize = pp["Capacity (MW)"].clip(lower=6, upper=60)
+                cap = pp["Capacity (MW)"].round(1).astype(str)
+                extra = (" · " + pp["Storage Duration (Hours)"].round(1).astype(str) + "h"
+                         if ptype == "Storage" else "")
+                add_map_scatter(
+                    fig, lat=pp[dl.LAT_COL], lon=pp[dl.LON_COL], mode="markers",
+                    marker=dict(size=psize, color=col, symbol=sym),
+                    name=f"{'Solar' if ptype=='Solar' else 'Storage / BESS'} projects",
+                    hoverinfo="text",
+                    text=pp["Power Project Name"].astype(str) + " · " + cap + " MW · " +
+                         pp["Power Project Status"].astype(str) + extra)
+
         set_map_layout(fig, style=base_style, center=mcenter, zoom=mzoom)
         fig.update_layout(margin=dict(l=0, r=0, t=0, b=0),
-                          legend=dict(orientation="h", y=1.02),
+                          legend=dict(orientation="h", y=1.03, x=0,
+                                      bgcolor="rgba(255,255,255,.7)"),
                           coloraxis_colorbar_title=dl.label(dl.BUS_COLUMNS, color_by))
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.caption("Node color = capacity/metric selected · size ∝ interconnection capacity · "
+                   "△ pin = substation · ★ = solar · ● teal = storage. Shapes render best on the "
+                   "Carto base maps.")
 
         # results table + download
         st.markdown('<div class="sect">Ranked buses (highest headroom first)</div>',
@@ -414,6 +453,24 @@ with tab_lookup:
                         'substations (name + coordinates):</div>', unsafe_allow_html=True)
             st.dataframe(ns, use_container_width=True, height=240, hide_index=True)
 
+        # nearest power projects (solar / BESS) — "proyectos aledaños"
+        near_proj = None
+        if not projects.empty:
+            pj = projects.copy()
+            pj["Distance (mi)"] = dl.haversine_miles(lat, lon, pj[dl.LAT_COL], pj[dl.LON_COL])
+            near_proj = pj.nsmallest(8, "Distance (mi)")
+            pj_cols = ["Distance (mi)", "Power Project Name", "Power Project Type",
+                       "Capacity (MW)", "Power Project Status", "Storage Duration (Hours)",
+                       "Owner", "County", "ISO"]
+            pj_cols = [c for c in pj_cols if c in near_proj.columns]
+            pjt = near_proj[pj_cols].copy()
+            pjt["Distance (mi)"] = pjt["Distance (mi)"].round(1)
+            st.markdown('<div class="sub" style="margin-top:6px">Closest solar / storage '
+                        'projects nearby:</div>', unsafe_allow_html=True)
+            st.dataframe(pjt, use_container_width=True, height=260, hide_index=True,
+                         column_config={c: st.column_config.Column(dl.label(dl.PROJECT_COLUMNS, c))
+                                        for c in pj_cols if c in dl.PROJECT_COLUMNS})
+
         # map
         fig = go.Figure()
         add_map_scatter(fig, lat=[lat], lon=[lon], mode="markers+text",
@@ -422,10 +479,23 @@ with tab_lookup:
         add_map_scatter(
             fig,
             lat=near[dl.LAT_COL], lon=near[dl.LON_COL], mode="markers",
-            marker=dict(size=14, color=INDIGO), name="Nearest buses",
+            marker=dict(size=14, color=INDIGO, symbol="circle"), name="Nearest buses",
             text=near["Bus Name"].astype(str) + " · " +
                  near[dl.HEADROOM_COL].round(0).astype(str) + " MW headroom",
             hoverinfo="text")
+        if near_proj is not None:
+            for ptype, (sym, col) in {"Solar": ("star", "#B8860B"),
+                                      "Storage": ("circle", "#0FB5AE")}.items():
+                pp = near_proj[near_proj["Power Project Type"] == ptype]
+                if pp.empty:
+                    continue
+                add_map_scatter(
+                    fig, lat=pp[dl.LAT_COL], lon=pp[dl.LON_COL], mode="markers",
+                    marker=dict(size=12, color=col, symbol=sym),
+                    name=f"{'Solar' if ptype=='Solar' else 'Storage / BESS'} nearby",
+                    hoverinfo="text",
+                    text=pp["Power Project Name"].astype(str) + " · " +
+                         pp["Capacity (MW)"].round(1).astype(str) + " MW")
         set_map_layout(fig, style="carto-positron",
                        center={"lat": lat, "lon": lon}, zoom=8)
         fig.update_layout(height=460, margin=dict(l=0, r=0, t=0, b=0),
@@ -445,7 +515,7 @@ with tab_ai:
         st.info("`ai_assistant.py` failed to import. Check requirements.txt.")
     else:
         # `view` is computed in the map tab (same module scope). Fall back to all buses.
-        ai_assistant.render_chat(view, buses, subs)
+        ai_assistant.render_chat(view, buses, subs, projects)
 
 
 # ============================================================ TAB 4: DICTIONARY
@@ -525,6 +595,17 @@ a small |SF| means <i>more</i> fits.
         [(v[0], k, v[1]) for k, v in dl.SUB_COLUMNS.items() if k in subs.columns],
         columns=["Field", "Raw column", "Meaning"])
     st.dataframe(ds, use_container_width=True, height=280, hide_index=True)
+
+    if not projects.empty:
+        st.markdown('<div class="sect">Power projects (Solar / BESS) table</div>',
+                    unsafe_allow_html=True)
+        st.markdown('<div class="sub">Nearby operating and queued solar and battery-storage '
+                    'projects — shown on the map (★ solar, ● teal storage) and in the '
+                    'nearest-node lookup.</div>', unsafe_allow_html=True)
+        dp = pd.DataFrame(
+            [(v[0], k, v[1]) for k, v in dl.PROJECT_COLUMNS.items() if k in projects.columns],
+            columns=["Field", "Raw column", "Meaning"])
+        st.dataframe(dp, use_container_width=True, height=320, hide_index=True)
 
 st.markdown(f'<div style="text-align:center;color:#8A85AD;font-size:12px;margin-top:18px">'
             f'Nofar USA · BlueSky Utility · {APP_VERSION} · '
