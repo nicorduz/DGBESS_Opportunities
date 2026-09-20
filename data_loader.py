@@ -84,6 +84,31 @@ SUB_COLUMNS: dict[str, tuple[str, str, str]] = {
     "Substation ID":    ("Substation ID", "Unique identifier.", "id"),
 }
 
+# Nearby power projects (solar + battery storage) — Orennia Power Projects export.
+PROJECT_COLUMNS: dict[str, tuple[str, str, str]] = {
+    "Power Project Name":          ("Project", "Name of the power project.", "text"),
+    "Generator Name":             ("Generator", "Generator / unit name.", "text"),
+    "Power Project Type":          ("Type", "Solar or Storage (battery / BESS).", "cat"),
+    "Capacity (MW)":               ("Capacity (MW)", "AC nameplate capacity of the project.", "num"),
+    "DC Capacity (MW)":            ("DC capacity (MW)", "DC nameplate (solar).", "num"),
+    "Power Project Status":        ("Status", "Operating / In Construction / Studies Undergoing / IA Executed / Pre-Study / Retired / Suspended.", "cat"),
+    "Detailed Status":             ("Detailed status", "Finer-grained development status.", "cat"),
+    "Battery Type":                ("Battery type", "Cell chemistry for storage projects.", "cat"),
+    "Storage Duration (Hours)":    ("Storage duration (h)", "Hours of storage at rated power.", "num"),
+    "Storage Energy Rating (MWh)": ("Storage energy (MWh)", "Energy capacity of the battery.", "num"),
+    "Connection Voltage (kV)":     ("Connection voltage (kV)", "Voltage at the point of interconnection.", "num"),
+    "Owner":                       ("Owner", "Project owner / developer.", "cat"),
+    "Balancing Authority Name":    ("Balancing authority", "Balancing authority that operates the area.", "cat"),
+    "ISO":                         ("ISO / RTO", "Grid operator region.", "cat"),
+    "County":                      ("County", "County of the project.", "cat"),
+    "First Power Date":            ("First power date", "Commercial-operation / expected date.", "cat"),
+    "Point of Interconnection":    ("Point of interconnection", "Substation / line where it connects.", "text"),
+    "Queue ID":                    ("Queue ID", "Interconnection queue identifier.", "id"),
+    "Latitude (Degrees)":          ("Latitude", "Latitude in decimal degrees.", "geo"),
+    "Longitude (Degrees)":         ("Longitude", "Longitude in decimal degrees.", "geo"),
+    "Generator ID":                ("Generator ID", "Unique identifier.", "id"),
+}
+
 # Fields we treat as the headline metrics everywhere (KPIs, default sorts, AI focus).
 HEADROOM_COL   = "Constraint Headroom (MW)"
 CAPACITY_COL   = "Bus Interconnection Capacity (MW)"
@@ -154,6 +179,18 @@ def load_substations(upload=None) -> pd.DataFrame:
     df = _coerce(_read_csv(src), SUB_COLUMNS)
     df = df.drop_duplicates()
     df = df.dropna(subset=["Latitude (Degrees)", "Longitude (Degrees)"])
+    return df.reset_index(drop=True)
+
+
+@st.cache_data(show_spinner=False)
+def load_projects(upload=None) -> pd.DataFrame:
+    src = upload if upload is not None else _find(
+        "*Power_Projects*.csv", "projects.csv")
+    if src is None:
+        return pd.DataFrame()
+    df = _coerce(_read_csv(src), PROJECT_COLUMNS)
+    df = df.drop_duplicates()
+    df = df.dropna(subset=[LAT_COL, LON_COL])
     return df.reset_index(drop=True)
 
 
