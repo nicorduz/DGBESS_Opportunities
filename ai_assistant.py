@@ -47,7 +47,7 @@ import data_loader as dl
 _PROVIDERS = ["GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"]
 
 _MODEL_DEFAULTS = {
-    "GEMINI_API_KEY":     "gemini-2.0-flash",
+    "GEMINI_API_KEY":     "gemini-3.6-flash",
     "GROQ_API_KEY":       "llama-3.3-70b-versatile",
     "OPENROUTER_API_KEY": "meta-llama/llama-3.3-70b-instruct:free",
     "OPENAI_API_KEY":     "gpt-4o-mini",
@@ -61,8 +61,28 @@ _PROVIDER_NAME = {
 
 
 def _secret(key):
+    """Read a secret. Robust to the common mistake of placing a top-level key
+    (e.g. GEMINI_API_KEY) *after* a [section] header, which TOML nests inside that
+    section — here we also look one level down so it's found either way."""
     try:
-        return st.secrets.get(key)
+        # 1) proper top-level location
+        try:
+            v = st.secrets.get(key)
+        except Exception:
+            v = None
+        if v:
+            return v
+        # 2) fallback: scan sections in case the key got nested under a table
+        for section in st.secrets:
+            try:
+                sec = st.secrets[section]
+            except Exception:
+                continue
+            if hasattr(sec, "get"):
+                v = sec.get(key)
+                if v:
+                    return v
+        return None
     except Exception:
         return None
 
@@ -82,10 +102,13 @@ def is_available() -> tuple[bool, str]:
     if not active_provider():
         return False, (
             "No LLM key found. The assistant is **free** — add ONE of these under "
-            "**Settings → Secrets** and reload:\n\n"
+            "**Settings → Secrets**, then reload:\n\n"
             "• `GEMINI_API_KEY` — get it free at aistudio.google.com/app/apikey  *(recommended)*\n"
             "• `GROQ_API_KEY` — free at console.groq.com/keys\n"
-            "• `OPENROUTER_API_KEY` — openrouter.ai/keys (use a `:free` model)")
+            "• `OPENROUTER_API_KEY` — openrouter.ai/keys (use a `:free` model)\n\n"
+            "**Important:** put the key on its own line **at the very top of the file, "
+            "before any `[section]` header** (e.g. before `[auth]`). A key placed under a "
+            "`[section]` gets nested inside it and won't be detected.")
     return True, ""
 
 
@@ -97,14 +120,29 @@ def _call_gemini(key, model, system, user, timeout=120):
     body = {
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1400},
+        # NOTE: temperature/top_p/top_k are deprecated on Gemini 3.x and are omitted.
+        # 3.x models "think" before answering, so keep the output budget generous or
+        # the visible answer can come back empty.
+        "generationConfig": {"maxOutputTokens": 8192},
     }
     r = requests.post(url, json=body, timeout=timeout)
     if r.status_code >= 400:
         raise RuntimeError(f"Gemini {r.status_code}: {r.text[:300]}")
     data = r.json()
-    return "".join(p.get("text", "")
-                   for p in data["candidates"][0]["content"]["parts"])
+    cands = data.get("candidates") or []
+    if not cands:
+        pf = data.get("promptFeedback", {})
+        raise RuntimeError(f"Gemini returned no answer "
+                           f"(promptFeedback={pf or 'none'}).")
+    parts = ((cands[0].get("content") or {}).get("parts")) or []
+    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+    if not text:
+        fr = cands[0].get("finishReason", "unknown")
+        raise RuntimeError(
+            f"Gemini returned an empty answer (finishReason={fr}). "
+            f"Try again, or set LLM_MODEL in Secrets to gemini-3.6-flash "
+            f"(or gemini-3.8-flash).")
+    return text
 
 
 def _call_openai_compatible(base, key, model, system, user, timeout=120, extra_headers=None):
