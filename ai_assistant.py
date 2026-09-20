@@ -206,6 +206,10 @@ KEY RELATIONSHIP (use it, and show the arithmetic when helpful):
   can be injected before that constraint binds." A larger |SF| means less MW fits for the
   same headroom; a smaller |SF| means more fits.
 
+NEARBY PROJECTS: a Power Projects table (solar + battery/BESS) may be provided. Use it to
+comment on nearby or competing projects, how much capacity is already built or queued around
+a node, and which developers are active — but never confuse a project's MW with a bus's headroom.
+
 HOW TO ANSWER:
 1. Answer ONLY from the rows and stats provided below. They are the current, real data.
 2. When ranking "best" nodes, weigh headroom AND capacity AND congestion (loading,
@@ -289,7 +293,46 @@ def _retrieve(full: pd.DataFrame, question: str, n: int = 25) -> pd.DataFrame:
     return df.sort_values(sort_col, ascending=False).head(n)
 
 
-def build_context(view_df, full_df, subs_df, question) -> str:
+def _projects_note(projects_df, question) -> str:
+    if projects_df is None or projects_df.empty:
+        return ""
+    df = projects_df
+    lines = [f"\nPOWER PROJECTS TABLE also available ({len(df)} solar / storage projects: "
+             f"name, type, capacity MW, status, storage duration, owner, county, ISO, "
+             f"coordinates). Use it for questions about nearby / competing projects, built-out "
+             f"capacity, or developer activity."]
+    if "Power Project Type" in df:
+        vc = df["Power Project Type"].value_counts()
+        lines.append("Projects by type: " + ", ".join(f"{k}={v}" for k, v in vc.items()))
+    if "Capacity (MW)" in df:
+        lines.append(f"Total project capacity: {df['Capacity (MW)'].sum():,.0f} MW "
+                     f"(max single project {df['Capacity (MW)'].max():,.0f} MW).")
+    # a few relevant projects by keyword (state/county names in the question)
+    ret = _retrieve_projects(df, question, 12)
+    if len(ret):
+        cols = [c for c in ["Power Project Name", "Power Project Type", "Capacity (MW)",
+                            "Power Project Status", "County", "ISO", "Owner"] if c in ret.columns]
+        lines.append("Projects matching the question (CSV):\n" + ret[cols].to_csv(index=False))
+    return "\n".join(lines)
+
+
+def _retrieve_projects(df, question, n=12):
+    q = question.lower()
+    out = df
+    if "County" in df.columns:
+        for cc in df["County"].dropna().unique():
+            if str(cc).lower() in q:
+                out = df[df["County"] == cc]
+                break
+    if "solar" in q and "Power Project Type" in out:
+        out = out[out["Power Project Type"] == "Solar"]
+    elif ("storage" in q or "bess" in q or "battery" in q) and "Power Project Type" in out:
+        out = out[out["Power Project Type"] == "Storage"]
+    sort_col = "Capacity (MW)" if "Capacity (MW)" in out else out.columns[0]
+    return out.sort_values(sort_col, ascending=False).head(n)
+
+
+def build_context(view_df, full_df, subs_df, question, projects_df=None) -> str:
     schema = "\n".join(
         f"- {dl.label(dl.BUS_COLUMNS, c)}: {dl.BUS_COLUMNS[c][1]}"
         for c in _AI_COLS if c in dl.BUS_COLUMNS)
@@ -304,10 +347,12 @@ def build_context(view_df, full_df, subs_df, question) -> str:
         subs_note = (f"\nSUBSTATION REFERENCE TABLE also available "
                      f"({len(subs_df)} rows: name, min/max kV, owner, county, state, "
                      f"coordinates). Use it for physical/location questions.")
+    proj_note = _projects_note(projects_df, question)
 
     return f"""COLUMN MEANINGS
 {schema}
 {subs_note}
+{proj_note}
 
 SUMMARY OF THE USER'S CURRENT FILTERED VIEW
 {_summary(view_df)}
@@ -329,11 +374,12 @@ SUGGESTED = [
     "Which transmission owner has the most open headroom in Rhode Island?",
     "Show me low-risk buses with headroom over 400 MW and explain the trade-offs.",
     "For a 200 MW storage project, which buses look siteable and why?",
+    "Which nearby solar or BESS projects are around the highest-headroom nodes?",
 ]
 
 
 # ── UI ─────────────────────────────────────────────────────────────────────────
-def render_chat(view_df, full_df, subs_df):
+def render_chat(view_df, full_df, subs_df, projects_df=None):
     st.markdown("#### \U0001F916 Ask the data")
     ok, reason = is_available()
     prov = active_provider()
@@ -370,7 +416,7 @@ def render_chat(view_df, full_df, subs_df):
         with st.chat_message("assistant"):
             with st.spinner("Reading the tables…"):
                 try:
-                    ctx = build_context(view_df, full_df, subs_df, q)
+                    ctx = build_context(view_df, full_df, subs_df, q, projects_df)
                     text, prov_name = _dispatch(SYSTEM_ROLE, ctx)
                     st.markdown(text)
                     st.caption(f"Answered by {prov_name} · grounded in your filtered data")
