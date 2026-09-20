@@ -393,6 +393,28 @@ def render_chat(view_df, full_df, subs_df, projects_df=None):
 
     st.session_state.setdefault("ai_hist", [])
 
+    # ── chat controls: start a fresh chat, or save the current one ──────────────
+    import datetime as _dt
+    hist = st.session_state["ai_hist"]
+    c_new, c_save, _c = st.columns([1, 1.4, 3])
+    if c_new.button("\U0001F5D1 New chat", use_container_width=True,
+                    help="Clear this conversation and start from scratch"):
+        st.session_state["ai_hist"] = []
+        st.session_state.pop("ai_pending", None)
+        st.rerun()
+    if hist:
+        transcript = "# Ask the data — chat transcript\n" + \
+            f"_Saved {_dt.datetime.now():%Y-%m-%d %H:%M}_\n\n" + \
+            "\n\n".join(f"**{'You' if m['role']=='user' else 'Assistant'}:** {m['content']}"
+                        for m in hist)
+        c_save.download_button(
+            "\U0001F4BE Save chat (.md)", transcript.encode(),
+            file_name=f"ask_the_data_{_dt.datetime.now():%Y%m%d_%H%M}.md",
+            mime="text/markdown", use_container_width=True)
+    else:
+        c_save.button("\U0001F4BE Save chat (.md)", disabled=True, use_container_width=True,
+                      help="Ask something first")
+
     if not st.session_state["ai_hist"]:
         st.caption("Try one of these:")
         cols = st.columns(2)
