@@ -202,8 +202,9 @@ def apply_filters(df: pd.DataFrame, f: dict) -> pd.DataFrame:
     m &= df[dl.CAPACITY_COL].between(*f["capacity"])
     if f["max_loading"] is not None and "Constraint AC Loading Ratio (Percentage)" in df:
         m &= df["Constraint AC Loading Ratio (Percentage)"].fillna(0) <= f["max_loading"]
-    if f["max_sf"] is not None and "Shift Factor (Number)" in df:
-        m &= df["Shift Factor (Number)"].abs().fillna(0) <= f["max_sf"]
+    if f["sf_range"] is not None and "Shift Factor (Number)" in df:
+        lo, hi = f["sf_range"]
+        m &= df["Shift Factor (Number)"].fillna(0).between(lo, hi)
     if f["hide_overload"] and "Existing Overload Flag" in df:
         m &= df["Existing Overload Flag"] != True     # noqa: E712
     if f["mv_only"]:     m &= df[dl.VOLTAGE_COL] <= 115
@@ -261,9 +262,14 @@ with tab_map:
     risk = r2[2].multiselect("Upgrade risk", cat_options(buses, "Risk Level"))
     ctype = r2[3].multiselect("Constraint type", cat_options(buses, "Constraint Type"))
 
-    r3 = st.columns([1.3, 1.3, 1.2, 1.2])
-    max_loading = r3[0].slider("Max constraint loading (%)", 0, 160, 160)
-    max_sf = r3[1].slider("Max |shift factor|", 0.0, 1.2, 1.2, 0.05)
+    r3 = st.columns([1.3, 1.6, 1.1, 1.1])
+    max_loading = r3[0].slider("Max constraint loading (%)", 0, 500, 500,
+                               help="Filters by the constraint's EXISTING loading in the base "
+                                    "case (not your project's impact). Leave at 500 to keep all.")
+    sf_range = r3[1].slider("Shift factor range (signed)", -1.2, 1.2, (-1.2, 1.2), 0.05,
+                            help="Negative = your injection RELIEVES the constraint (favorable). "
+                                 "Keep the low end at -1.2 to retain those; lower the high end to "
+                                 "drop nodes your project would load hard.")
     mv_only = r3[2].checkbox("Medium voltage ≤115 kV only", value=preset.get("mv_only", False))
     hide_overload = r3[3].checkbox("Hide already-overloaded", value=False)
 
@@ -271,8 +277,8 @@ with tab_map:
 
     f = dict(states=states, counties=counties, owners=owners, volts=volts, risk=risk,
              ctype=ctype, headroom=headroom, capacity=capacity,
-             max_loading=(None if max_loading >= 160 else max_loading),
-             max_sf=(None if max_sf >= 1.2 else max_sf),
+             max_loading=(None if max_loading >= 500 else max_loading),
+             sf_range=(None if sf_range == (-1.2, 1.2) else sf_range),
              mv_only=mv_only, hide_overload=hide_overload, name=name)
 
     view = apply_filters(buses, f)
@@ -305,7 +311,7 @@ with tab_map:
         hover_cols = {
             dl.VOLTAGE_COL: True, dl.HEADROOM_COL: ":.0f", dl.CAPACITY_COL: ":.0f",
             "Constraint AC Loading Ratio (Percentage)": ":.0f", "Risk Level": True,
-            "Constraint Type": True, "County": True, "State": True, "Owner": True,
+            "Constraint Type": True, "County": True, "City": True, "State": True, "Owner": True,
             dl.LAT_COL: False, dl.LON_COL: False,
         }
         hover_cols = {k: v for k, v in hover_cols.items() if k in view.columns}
@@ -375,7 +381,7 @@ with tab_map:
         table_cols = [c for c in ["Bus Name", dl.VOLTAGE_COL, dl.HEADROOM_COL, dl.CAPACITY_COL,
                                   "Constraint AC Loading Ratio (Percentage)", "Existing Overload Flag",
                                   "Shift Factor (Number)", "Risk Level", "Constraint Type",
-                                  "Primary Limiting Constraint", "County", "State", "Owner",
+                                  "Primary Limiting Constraint", "City", "County", "State", "Owner",
                                   dl.LAT_COL, dl.LON_COL] if c in view.columns]
         ranked = view.sort_values(dl.HEADROOM_COL, ascending=False)[table_cols]
         st.dataframe(ranked, use_container_width=True, height=340,
@@ -430,7 +436,7 @@ with tab_lookup:
         near = pool.nsmallest(n_near, "Distance (mi)")
 
         cols = ["Distance (mi)", "Bus Name", dl.VOLTAGE_COL, dl.HEADROOM_COL, dl.CAPACITY_COL,
-                "Constraint AC Loading Ratio (Percentage)", "Risk Level", "County", "State", "Owner"]
+                "Constraint AC Loading Ratio (Percentage)", "Risk Level", "City", "County", "State", "Owner"]
         cols = [c for c in cols if c in near.columns]
         show = near[cols].copy()
         show["Distance (mi)"] = show["Distance (mi)"].round(1)
@@ -461,7 +467,7 @@ with tab_lookup:
             near_proj = pj.nsmallest(8, "Distance (mi)")
             pj_cols = ["Distance (mi)", "Power Project Name", "Power Project Type",
                        "Capacity (MW)", "Power Project Status", "Storage Duration (Hours)",
-                       "Owner", "County", "ISO"]
+                       "Owner", "City", "County", "ISO"]
             pj_cols = [c for c in pj_cols if c in near_proj.columns]
             pjt = near_proj[pj_cols].copy()
             pjt["Distance (mi)"] = pjt["Distance (mi)"].round(1)
