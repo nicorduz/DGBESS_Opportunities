@@ -218,16 +218,18 @@ HOW TO ANSWER:
    and the limiting constraint when you cite a node. Where it helps, show the H/|SF| math.
 4. If the question asks about something the data does NOT cover (for example a region not
    present in the loaded export), say so plainly instead of guessing.
-5. Be concise and specific. Lead with the answer, then a short 'why', then a compact list
-   or table of the supporting buses. Note that all figures are Orennia estimates for the
-   stated study case, not a guarantee of grantable capacity.
+5. Lead with the answer, then a short 'why', then the supporting buses. If the user asks for a
+   ranking of N (up to 50), return a numbered list/table of that many rows from the data shown —
+   do not cap it at 5 or 10. When useful, include the City (derived from coordinates) so the user
+   gets a recognizable place name, alongside county/state. All figures are Orennia estimates for
+   the stated study case, not a guarantee of grantable capacity.
 """
 
 _AI_COLS = [
     "Bus Name", dl.VOLTAGE_COL, dl.HEADROOM_COL, dl.CAPACITY_COL,
     "Constraint AC Loading Ratio (Percentage)", "Existing Overload Flag",
     "Shift Factor (Number)", "Risk Level", "Constraint Type",
-    "Primary Limiting Constraint", "County", "State", "Owner",
+    "Primary Limiting Constraint", "City", "County", "State", "Owner",
 ]
 
 # US state name -> abbreviation, for keyword retrieval on free-text questions.
@@ -311,7 +313,7 @@ def _projects_note(projects_df, question) -> str:
     ret = _retrieve_projects(df, question, 12)
     if len(ret):
         cols = [c for c in ["Power Project Name", "Power Project Type", "Capacity (MW)",
-                            "Power Project Status", "County", "ISO", "Owner"] if c in ret.columns]
+                            "Power Project Status", "City", "County", "ISO", "Owner"] if c in ret.columns]
         lines.append("Projects matching the question (CSV):\n" + ret[cols].to_csv(index=False))
     return "\n".join(lines)
 
@@ -338,9 +340,9 @@ def build_context(view_df, full_df, subs_df, question, projects_df=None) -> str:
         for c in _AI_COLS if c in dl.BUS_COLUMNS)
 
     top_view = _rows_to_text(view_df.sort_values(
-        dl.HEADROOM_COL, ascending=False) if dl.HEADROOM_COL in view_df else view_df, 30)
-    retrieved = _retrieve(full_df, question, 25)
-    ret_txt = _rows_to_text(retrieved, 25)
+        dl.HEADROOM_COL, ascending=False) if dl.HEADROOM_COL in view_df else view_df, 60)
+    retrieved = _retrieve(full_df, question, 55)
+    ret_txt = _rows_to_text(retrieved, 55)
 
     subs_note = ""
     if subs_df is not None and not subs_df.empty:
