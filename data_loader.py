@@ -51,6 +51,7 @@ BUS_COLUMNS: dict[str, tuple[str, str, str]] = {
     "County":                                   ("County", "County of the bus.", "cat"),
     "ISO":                                      ("ISO / RTO", "Grid operator region.", "cat"),
     "State":                                    ("State", "US state.", "cat"),
+    "City":                                     ("City", "Nearest city/town (derived from coordinates).", "cat"),
     "Owner":                                    ("Transmission owner", "Utility that owns the bus / local transmission.", "cat"),
     "Case Last Updated":                        ("Case updated", "Date the underlying powerflow case was refreshed.", "cat"),
     "Constraint Area":                          ("Constraint area", "Region the binding constraint sits in (can differ from the bus's own ISO).", "cat"),
@@ -81,6 +82,7 @@ SUB_COLUMNS: dict[str, tuple[str, str, str]] = {
     "County":           ("County", "County.", "cat"),
     "Owner Source":     ("Owner source", "Provenance of the owner attribution.", "cat"),
     "State":            ("State", "US state / province.", "cat"),
+    "City":             ("City", "Nearest city/town (derived from coordinates).", "cat"),
     "Substation ID":    ("Substation ID", "Unique identifier.", "id"),
 }
 
@@ -101,6 +103,7 @@ PROJECT_COLUMNS: dict[str, tuple[str, str, str]] = {
     "Balancing Authority Name":    ("Balancing authority", "Balancing authority that operates the area.", "cat"),
     "ISO":                         ("ISO / RTO", "Grid operator region.", "cat"),
     "County":                      ("County", "County of the project.", "cat"),
+    "City":                        ("City", "Nearest city/town (derived from coordinates).", "cat"),
     "First Power Date":            ("First power date", "Commercial-operation / expected date.", "cat"),
     "Point of Interconnection":    ("Point of interconnection", "Substation / line where it connects.", "text"),
     "Queue ID":                    ("Queue ID", "Interconnection queue identifier.", "id"),
@@ -167,6 +170,7 @@ def load_buses(upload=None) -> pd.DataFrame:
     df = df.drop_duplicates()
     # keep only rows we can actually place on a map
     df = df.dropna(subset=[LAT_COL, LON_COL])
+    df = add_city(df)
     return df.reset_index(drop=True)
 
 
@@ -179,6 +183,7 @@ def load_substations(upload=None) -> pd.DataFrame:
     df = _coerce(_read_csv(src), SUB_COLUMNS)
     df = df.drop_duplicates()
     df = df.dropna(subset=["Latitude (Degrees)", "Longitude (Degrees)"])
+    df = add_city(df)
     return df.reset_index(drop=True)
 
 
@@ -191,6 +196,7 @@ def load_projects(upload=None) -> pd.DataFrame:
     df = _coerce(_read_csv(src), PROJECT_COLUMNS)
     df = df.drop_duplicates()
     df = df.dropna(subset=[LAT_COL, LON_COL])
+    df = add_city(df)
     return df.reset_index(drop=True)
 
 
@@ -207,6 +213,23 @@ def cols_by_kind(registry: dict, kind: str, present_in: pd.DataFrame) -> list[st
 
 def label(registry: dict, col: str) -> str:
     return registry.get(col, (col, "", ""))[0]
+
+
+def add_city(df: pd.DataFrame) -> pd.DataFrame:
+    """Add a 'City' column derived from lat/lon, fully offline via reverse_geocoder.
+    No network, no API key. If the package isn't installed it silently does nothing,
+    so the app still runs (the AI then falls back to County/State for location)."""
+    if df.empty or LAT_COL not in df.columns or LON_COL not in df.columns:
+        return df
+    try:
+        import reverse_geocoder as _rg
+        coords = list(zip(df[LAT_COL].astype(float), df[LON_COL].astype(float)))
+        hits = _rg.search(coords, mode=1)          # mode=1 = single-thread (Streamlit-safe)
+        df = df.copy()
+        df["City"] = [h.get("name") for h in hits]
+    except Exception:
+        pass
+    return df
 
 
 def haversine_miles(lat1, lon1, lat2, lon2):
